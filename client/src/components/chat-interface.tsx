@@ -233,8 +233,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       aiState === "AI_STATE_GENERATING" ||
       aiState === "AI_STATE_EXTERNAL_SOURCES";
 
-    console.log("aiState", aiState);
-
     const handleStopGenerating = () => {
       if (channel) {
         const aiMessage = [...messages]

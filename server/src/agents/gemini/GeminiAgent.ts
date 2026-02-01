@@ -8,6 +8,10 @@ export class GeminiAgent implements AIAgent {
   private lastInteractionTs = Date.now();
   private chatHistory: { role: string; parts: { text: string }[] }[] = [];
   private handlers: GeminiResponseHandler[] = [];
+  private isProcessing = false; // Prevent concurrent API calls
+  private lastApiCallTs = 0; // Track last API call time
+  private apiCallCount = 0; // Track total API calls for debugging
+  private messageQueue: Event[] = []; // Queue messages while processing
 
   constructor(
     readonly chatClient: StreamChat,
@@ -19,6 +23,8 @@ export class GeminiAgent implements AIAgent {
     await this.chatClient.disconnectUser();
     this.handlers.forEach((handler) => handler.dispose());
     this.handlers = [];
+    this.isProcessing = false;
+    this.messageQueue = [];
   };
 
   get user() {
@@ -39,6 +45,7 @@ export class GeminiAgent implements AIAgent {
 
     this.genai = new GoogleGenAI({ apiKey });
     this.chatClient.on("message.new", this.handleMessage);
+    console.log("[GeminiAgent] Initialized and listening for messages");
   };
 
   private getSystemPrompt = (context?: string): string => {
@@ -66,7 +73,7 @@ Your goal is to provide accurate, current, and helpful written content.`;
 
   private handleMessage = async (e: Event) => {
     if (!this.genai) {
-      console.log("Gemini not initialized");
+      console.log("[GeminiAgent] Gemini not initialized, skipping");
       return;
     }
 
@@ -86,8 +93,34 @@ Your goal is to provide accurate, current, and helpful written content.`;
       `[GeminiAgent] Received message: "${message.substring(0, 50)}..." from user: ${e.user?.id}`,
     );
 
+    // If already processing, queue the message instead of firing another API call
+    if (this.isProcessing) {
+      console.log(
+        `[GeminiAgent] Already processing a message, queuing this one`,
+      );
+      this.messageQueue.push(e);
+      return;
+    }
+
+    await this.processMessage(e);
+
+    // Process any queued messages one by one
+    while (this.messageQueue.length > 0) {
+      const nextEvent = this.messageQueue.shift()!;
+      console.log(
+        `[GeminiAgent] Processing queued message (${this.messageQueue.length} remaining)`,
+      );
+      await this.processMessage(nextEvent);
+    }
+  };
+
+  private processMessage = async (e: Event) => {
+    if (!this.genai) return;
+
+    this.isProcessing = true;
     this.lastInteractionTs = Date.now();
 
+    const message = e.message!.text!;
     const writingTask = ((e.message as any).custom as { writingTask?: string })
       ?.writingTask;
     const context = writingTask ? `Writing Task: ${writingTask}` : undefined;
@@ -113,6 +146,16 @@ Your goal is to provide accurate, current, and helpful written content.`;
       message_id: channelMessage.id,
     });
 
+    // Rate limit: ensure at least 4 seconds between API calls
+    const timeSinceLastCall = Date.now() - this.lastApiCallTs;
+    if (timeSinceLastCall < 4000 && this.lastApiCallTs > 0) {
+      const waitTime = 4000 - timeSinceLastCall;
+      console.log(
+        `[GeminiAgent] Rate limiting: waiting ${waitTime}ms before API call`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, waitTime));
+    }
+
     // Send generating indicator
     await this.channel.sendEvent({
       type: "ai_indicator.update",
@@ -122,16 +165,19 @@ Your goal is to provide accurate, current, and helpful written content.`;
     });
 
     try {
+      this.apiCallCount++;
+      this.lastApiCallTs = Date.now();
       console.log(
-        `[GeminiAgent] Calling Gemini API with ${this.chatHistory.length} messages...`,
+        `[GeminiAgent] API call #${this.apiCallCount} with ${this.chatHistory.length} messages in history`,
       );
+
       // Call Gemini with streaming, with retry for rate limits
       let response: any;
       const maxRetries = 3;
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
           response = await this.genai.models.generateContentStream({
-            model: "gemini-2.0-flash-lite",
+            model: "gemini-2.5-flash",
             contents: this.chatHistory,
             config: {
               systemInstruction: systemPrompt,
@@ -205,6 +251,8 @@ Your goal is to provide accurate, current, and helpful written content.`;
           updateError,
         );
       }
+    } finally {
+      this.isProcessing = false;
     }
   };
 
