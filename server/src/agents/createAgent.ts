@@ -22,7 +22,6 @@ export const createAgent = async (
   switch (platform) {
     case AgentPlatform.GEMINI:
     case AgentPlatform.WRITING_ASSISTANT:
-    case AgentPlatform.OPENAI:
       return new GeminiAgent(chatClient, channel);
     default:
       throw new Error(`Unsupported agent platform: ${platform}`);

@@ -10,7 +10,6 @@ export interface AIAgent {
 }
 
 export enum AgentPlatform {
-  OPENAI = "openai",
   GEMINI = "gemini",
   WRITING_ASSISTANT = "writing_assist",
 }
